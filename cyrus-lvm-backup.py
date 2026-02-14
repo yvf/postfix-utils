@@ -52,6 +52,9 @@ def main(lv_name, vg_name, rsync_host, pushover_yaml, force):
         validate(lv_name=lv_full_name, bkup_lv_name=bkup_lv_full_name, force=force,
                  mount_point=mount_point, pushover_yaml=pushover_yaml)
 
+        # Clean up past backup artifacts in case prior run didn't complete
+        clean(mount_point, vg_name, backup_vol)
+
         # stop cyrus-imapd
         cyrus = Unit(b'cyrus-imapd.service')
         cyrus.load()
@@ -81,13 +84,7 @@ def main(lv_name, vg_name, rsync_host, pushover_yaml, force):
         check_proc(proc, 'Failed to rsync to backup host')
 
         # unmount & remove snapshot
-        proc = run(f'umount {mount_point}'.split(), text=True, capture_output=True)
-        check_proc(proc, f'Failed to unmount {mount_point}')
-        proc = run(f'lvremove --yes /dev/{vg_name}/{backup_vol}'.split(), capture_output=True,
-                   text=True)
-        check_proc(proc, 'Failed to remove logical volume {vg_name}/{backup_vol}')
-        proc = run(f'rmdir {mount_point}'.split(), stdout=DEVNULL, stderr=PIPE, text=True)
-        check_proc(proc, f'Failed to remove mountpoint directory {mount_point}')
+        clean(mount_point, vg_name, backup_vol)
 
         # Verify cyrus is running
         if not (cyrus.ActiveState == b'active' and cyrus.SubState == b'running'):
@@ -109,6 +106,22 @@ def main(lv_name, vg_name, rsync_host, pushover_yaml, force):
         # It's a no-op if it's running already
         if cyrus:
             cyrus.Start(f'replace')
+
+def clean(mount_point, vg_name, backup_vol):
+    if os.path.ismount(mount_point):
+        proc = run(f'umount {mount_point}'.split(), text=True, capture_output=True)
+        check_proc(proc, f'Failed to unmount {mount_point}')
+
+    proc = run(f'lvs --quiet {vg_name}', capture_output=True, text=True)
+    check_proc(proc, 'Failed to get list of logical volumes for cleanup')
+    if f'  {backup_vol} ' in proc.stdout:
+        proc = run(f'lvremove --yes /dev/{vg_name}/{backup_vol}'.split(), capture_output=True,
+                   text=True)
+        check_proc(proc, 'Failed to remove logical volume {vg_name}/{backup_vol}')
+
+    if os.path.isdir(mount_point):
+        proc = run(f'rmdir {mount_point}'.split(), stdout=DEVNULL, stderr=PIPE, text=True)
+        check_proc(proc, f'Failed to remove mountpoint directory {mount_point}')
 
 def check_proc(proc: CompletedProcess, err_msg: str):
     if proc.returncode == 0:
