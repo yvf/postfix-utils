@@ -143,7 +143,7 @@ def clean(mount_point, vg_name, backup_vol):
         proc = run(f'umount {mount_point}'.split(), text=True, capture_output=True)
         check_proc(proc, f'Failed to unmount {mount_point}')
 
-    proc = run(f'lvs --quiet {vg_name}', capture_output=True, text=True)
+    proc = run(f'lvs --quiet {vg_name}'.split(), capture_output=True, text=True)
     check_proc(proc, 'Failed to get list of logical volumes for cleanup')
     if f'  {backup_vol} ' in proc.stdout:
         proc = run(f'lvremove --yes /dev/{vg_name}/{backup_vol}'.split(), capture_output=True,
