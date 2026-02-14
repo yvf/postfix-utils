@@ -5,7 +5,9 @@
 # a message via pushover (optionally).
 #
 
+import atexit
 import click
+import fcntl
 import os
 from pathlib import Path
 from pystemd.systemd1 import Unit
@@ -20,6 +22,8 @@ class LocalError(RuntimeError):
 
 PUSHOVER_TOKEN = None
 PUSHOVER_USER_KEY = None
+SCRIPT = Path(__file__).name
+LOCK_FILE = Path(f'/run/{SCRIPT}')
 
 @click.command()
 @click.option('--lv-name', help='Name of logical volume to snapshot', required=True)
@@ -29,6 +33,9 @@ PUSHOVER_USER_KEY = None
 @click.option('--force/--no-force', default=False,
               help='Forcibly remove existing LVM2 snapshot and/or mountpoint')
 def main(lv_name, vg_name, rsync_host, pushover_yaml, force):
+    # prevent re-entrancy
+    acquire_lock(LOCK_FILE)
+
     if pushover_yaml:
         pushover_yaml = Path(pushover_yaml)
         if not pushover_yaml.exists():
@@ -107,6 +114,30 @@ def main(lv_name, vg_name, rsync_host, pushover_yaml, force):
         if cyrus:
             cyrus.Start(f'replace')
 
+def acquire_lock(lock_file_path):
+    """
+    Acquires an exclusive cooperative lock on a file.
+    The lock is maintained until the process exits.
+    (gemini generated code)
+    """
+    # Open the file in append mode so we don't truncate it if it exists,
+    # and create it if it doesn't.
+    try:
+        # We keep the file object reference to prevent it from being garbage collected
+        _lock_file_fd = open(lock_file_path, 'a+')
+
+        # LOCK_EX: Exclusive lock
+        # LOCK_NB: Non-blocking (raises BlockingIOError if already locked)
+        fcntl.flock(_lock_file_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    except (IOError, BlockingIOError):
+        raise Exception(f"Failed to acquire lock: {lock_file_path} is already locked by another process.")
+
+    # Ensure the file is closed (and lock released) only when the Python process exits
+    atexit.register(_lock_file_fd.close)
+
+    return _lock_file_fd
+
 def clean(mount_point, vg_name, backup_vol):
     if os.path.ismount(mount_point):
         proc = run(f'umount {mount_point}'.split(), text=True, capture_output=True)
@@ -167,22 +198,18 @@ def validate(lv_name=None, bkup_lv_name=None, force=False, mount_point=None, pus
         if output not in proc.stdout:
             raise LocalError(f'Output from "{cmd}" ({proc.stdout.strip()})did not match expected "{output}"')
 
-    if os.path.exists(mount_point):
-        if force:
-            mounted = check_output(['mount'], text=True)
-            if f'on {mount_point} ' in mounted:
-                proc = run(f'umount {mount_point}'.split(), capture_output=True, text=True)
-                if proc.returncode != 0:
-                    if proc.stderr:
-                        raise LocalError(f'umount error: {proc.stderr.strip()}')
-                    else:
-                        raise LocalError(f'umount exited {proc.returncode}')
-                mounted = check_output(['mount'], text=True)
-                if f'on {mount_point} ' in mounted:
-                    raise LocalError(f'Unable to unmount {mount_point}')
-        else:
-            raise LocalError(f'mount point {mount_point} exists')
-    else:
+    # Clean up mount in case previous run failed with the backup snapshot mounted
+    if os.path.ismount(mount_point):
+        proc = run(f'umount {mount_point}'.split(), capture_output=True, text=True)
+        if proc.returncode != 0:
+            if proc.stderr:
+                raise LocalError(f'umount error: {proc.stderr.strip()}')
+            else:
+                raise LocalError(f'umount exited {proc.returncode}')
+        if os.path.ismount(mount_point):
+            raise LocalError(f'Unable to unmount {mount_point}')
+
+    if not os.path.exists(mount_point):
         proc = run(f'mkdir {mount_point}'.split(), stdout=PIPE, stderr=STDOUT, text=True)
         if proc.returncode != 0:
             if proc.stdout:
