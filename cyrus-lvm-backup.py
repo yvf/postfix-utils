@@ -59,9 +59,6 @@ def main(lv_name, vg_name, rsync_host, pushover_yaml, force):
         validate(lv_name=lv_full_name, bkup_lv_name=bkup_lv_full_name, force=force,
                  mount_point=mount_point, pushover_yaml=pushover_yaml)
 
-        # Clean up past backup artifacts in case prior run didn't complete
-        clean(mount_point, vg_name, backup_vol)
-
         # stop cyrus-imapd
         cyrus = Unit(b'cyrus-imapd.service')
         cyrus.load()
